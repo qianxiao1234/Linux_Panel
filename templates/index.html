@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>极简 Linux 监控</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: auto; }
+        h1 { color: #333; text-align: center; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .card { background: white; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card h2 { margin-top: 0; font-size: 1.2em; border-bottom: 1px solid #eee; padding-bottom: 8px; }
+        .stat-row { display: flex; justify-content: space-between; margin: 5px 0; }
+        .progress { background: #e0e0e0; border-radius: 10px; height: 10px; width: 100%; margin-top: 5px; }
+        .progress-bar { background: #4caf50; height: 10px; border-radius: 10px; width: 0%; }
+        .value { font-weight: bold; }
+        .error { color: red; text-align: center; }
+        .footer { text-align: center; margin-top: 20px; color: #777; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🐧 Linux 服务器监控</h1>
+        <div id="error" class="error"></div>
+        <div class="grid" id="stats-grid">
+            <!-- 动态填充 -->
+        </div>
+        <div class="footer">数据每 1 秒更新一次</div>
+    </div>
+
+    <script>
+        // 上一次的网络流量和时间戳（用于计算速率）
+        let lastNet = { sent: 0, recv: 0, timestamp: Date.now() };
+
+        // 格式化字节
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // 格式化运行时间（秒 -> 天时分秒）
+        function formatUptime(seconds) {
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${days}天 ${hours}时 ${minutes}分 ${secs}秒`;
+        }
+
+        // 更新页面数据
+        async function fetchStats() {
+            try {
+                const response = await fetch('/api/stats');
+                if (!response.ok) throw new Error('网络响应错误');
+                const data = await response.json();
+
+                // 计算网络速率
+                const now = Date.now();
+                const timeDelta = (now - lastNet.timestamp) / 1000; // 秒
+                let sentSpeed = 0, recvSpeed = 0;
+                if (lastNet.timestamp && timeDelta > 0) {
+                    sentSpeed = (data.network.bytes_sent - lastNet.sent) / timeDelta;
+                    recvSpeed = (data.network.bytes_recv - lastNet.recv) / timeDelta;
+                }
+                // 更新上次值
+                lastNet = {
+                    sent: data.network.bytes_sent,
+                    recv: data.network.bytes_recv,
+                    timestamp: now
+                };
+
+                // 构建 HTML
+                let html = '';
+
+                // CPU 卡片
+                html += `<div class="card"><h2>💻 CPU</h2>`;
+                html += `<div class="stat-row"><span>使用率:</span><span class="value">${data.cpu_percent.toFixed(1)}%</span></div>`;
+                html += `<div class="progress"><div class="progress-bar" style="width:${data.cpu_percent}%;"></div></div>`;
+                html += `<div class="stat-row"><span>负载 1min:</span><span class="value">${data.load_avg[0].toFixed(2)}</span></div>`;
+                html += `<div class="stat-row"><span>负载 5min:</span><span class="value">${data.load_avg[1].toFixed(2)}</span></div>`;
+                html += `<div class="stat-row"><span>负载 15min:</span><span class="value">${data.load_avg[2].toFixed(2)}</span></div>`;
+                html += `</div>`;
+
+                // 内存卡片
+                html += `<div class="card"><h2>🧠 内存</h2>`;
+                html += `<div class="stat-row"><span>已用:</span><span class="value">${formatBytes(data.memory.used)} / ${formatBytes(data.memory.total)} (${data.memory.percent}%)</span></div>`;
+                html += `<div class="progress"><div class="progress-bar" style="width:${data.memory.percent}%;"></div></div>`;
+                html += `<div class="stat-row"><span>可用:</span><span class="value">${formatBytes(data.memory.available)}</span></div>`;
+                html += `<div class="stat-row"><span>空闲:</span><span class="value">${formatBytes(data.memory.free)}</span></div>`;
+                html += `</div>`;
+
+                // 交换分区卡片
+                html += `<div class="card"><h2>💾 交换</h2>`;
+                if (data.swap.total > 0) {
+                    html += `<div class="stat-row"><span>已用:</span><span class="value">${formatBytes(data.swap.used)} / ${formatBytes(data.swap.total)} (${data.swap.percent}%)</span></div>`;
+                    html += `<div class="progress"><div class="progress-bar" style="width:${data.swap.percent}%;"></div></div>`;
+                } else {
+                    html += `<div class="stat-row"><span>未启用或为 0</span></div>`;
+                }
+                html += `</div>`;
+
+                // 磁盘分区卡片（可多个）
+                html += `<div class="card"><h2>📁 磁盘分区</h2>`;
+                data.disk_partitions.forEach(part => {
+                    html += `<div style="margin-top:10px;"><strong>${part.mountpoint}</strong> (${part.device})</div>`;
+                    html += `<div class="stat-row"><span>已用:</span><span class="value">${formatBytes(part.used)} / ${formatBytes(part.total)} (${part.percent}%)</span></div>`;
+                    html += `<div class="progress"><div class="progress-bar" style="width:${part.percent}%;"></div></div>`;
+                });
+                if (data.disk_partitions.length === 0) html += `<div>无可用分区</div>`;
+                html += `</div>`;
+
+                // 网络卡片
+                html += `<div class="card"><h2>🌐 网络</h2>`;
+                html += `<div class="stat-row"><span>上传 (累计):</span><span class="value">${formatBytes(data.network.bytes_sent)}</span></div>`;
+                html += `<div class="stat-row"><span>下载 (累计):</span><span class="value">${formatBytes(data.network.bytes_recv)}</span></div>`;
+                html += `<div class="stat-row"><span>上传速度:</span><span class="value">${formatBytes(sentSpeed)}/s</span></div>`;
+                html += `<div class="stat-row"><span>下载速度:</span><span class="value">${formatBytes(recvSpeed)}/s</span></div>`;
+                html += `</div>`;
+
+                // 运行时间卡片
+                html += `<div class="card"><h2>⏱️ 系统</h2>`;
+                html += `<div class="stat-row"><span>运行时间:</span><span class="value">${formatUptime(data.uptime_seconds)}</span></div>`;
+                const bootDate = new Date(data.boot_time * 1000).toLocaleString();
+                html += `<div class="stat-row"><span>启动时间:</span><span class="value">${bootDate}</span></div>`;
+                html += `</div>`;
+
+                document.getElementById('stats-grid').innerHTML = html;
+                document.getElementById('error').innerText = '';
+            } catch (err) {
+                document.getElementById('error').innerText = '获取数据失败: ' + err.message;
+            }
+        }
+
+        // 初始加载，然后每 1 秒更新
+        fetchStats();
+        setInterval(fetchStats, 1000);
+    </script>
+</body>
+</html>
